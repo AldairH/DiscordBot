@@ -1,3 +1,10 @@
+const USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0'
+];
+
 const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, entersState, AudioPlayerStatus, VoiceConnectionStatus } = require('@discordjs/voice');
 const play = require('play-dl');
@@ -18,6 +25,9 @@ const client = new Client({
 
 const queues = new Map();
 
+function getRandomUserAgent() {
+    return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
 
 class MusicQueue {
     constructor() {
@@ -70,9 +80,31 @@ function createInfoEmbed(title, description) {
         .setDescription(description);
 }
 
-async function searchYouTube(query) {
+async function searchYouTube(query, retryCount = 0) {
     try {
-        const searchResults = await play.search(query, { limit: 1, source: { youtube: 'video' } });
+        // Añadir delay progresivo
+        if (retryCount > 0) {
+            const delay = Math.min(2000 * retryCount, 8000);
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
+
+        const searchResults = await play.search(query, { 
+            limit: 1, 
+            source: { youtube: 'video' },
+            // Opciones adicionales para evitar detección
+            requestOptions: {
+                headers: {
+                    'User-Agent': getRandomUserAgent(),
+                    'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                }
+            }
+        });
+
         if (searchResults.length > 0) {
             const video = searchResults[0];
             return {
@@ -85,7 +117,13 @@ async function searchYouTube(query) {
         }
         return null;
     } catch (error) {
-        console.error('Error buscando en YouTube:', error);
+        console.error(`Error buscando en YouTube (intento ${retryCount + 1}):`, error.message);
+        
+        // Reintentar si es error de YouTube y no hemos superado límite
+        if (retryCount < 2 && (error.message.includes('Sign in') || error.message.includes('blocked'))) {
+            return searchYouTube(query, retryCount + 1);
+        }
+        
         return null;
     }
 }
@@ -110,34 +148,44 @@ async function playMusic(queue, retryCount = 0) {
     }
 
     try {
-        // Añadir delay progresivo para evitar spam
+        // Delay progresivo más inteligente
         if (retryCount > 0) {
-            const delay = Math.min(5000 * retryCount, 30000); // Max 30 segundos
+            const delays = [3000, 8000, 15000, 30000]; // 3s, 8s, 15s, 30s
+            const delay = delays[Math.min(retryCount - 1, delays.length - 1)];
             console.log(`Esperando ${delay/1000} segundos antes del reintento ${retryCount}`);
             await new Promise(resolve => setTimeout(resolve, delay));
         }
 
-        // Intentar con diferentes opciones de calidad
-        let stream;
-        const qualities = [1, 2, 0]; // Probar diferentes calidades
-        
-        for (let quality of qualities) {
-            try {
-                stream = await play.stream(song.url, { 
-                    quality: quality,
-                    discordPlayerCompatibility: true
-                });
-                break;
-            } catch (qualityError) {
-                if (quality === qualities[qualities.length - 1]) {
-                    throw qualityError;
+        // Configuración mejorada para play-dl
+        const streamOptions = { 
+            quality: 1, // Calidad media para mejor compatibilidad
+            discordPlayerCompatibility: true,
+            seek: 0,
+            // Opciones de request mejoradas
+            requestOptions: {
+                headers: {
+                    'User-Agent': getRandomUserAgent(),
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept': '*/*',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                    'DNT': '1',
+                    'Pragma': 'no-cache',
+                    'Sec-Fetch-Dest': 'empty',
+                    'Sec-Fetch-Mode': 'cors',
+                    'Sec-Fetch-Site': 'cross-site'
                 }
-                console.log(`Calidad ${quality} falló, probando siguiente...`);
-            }
-        }
+            },
+            // Añadir timeout
+            timeout: 30000
+        };
+
+        const stream = await play.stream(song.url, streamOptions);
         
         const resource = createAudioResource(stream.stream, {
-            inputType: stream.type
+            inputType: stream.type,
+            inlineVolume: true
         });
 
         queue.player.play(resource);
@@ -178,9 +226,9 @@ async function playMusic(queue, retryCount = 0) {
                         .setStyle(queue.loop ? ButtonStyle.Success : ButtonStyle.Secondary)
                 );
 
-            // Si es un reintento exitoso, mencionar que funcionó
+            // Mensaje de éxito mejorado
             if (retryCount > 0) {
-                nowPlayingEmbed.setFooter({ text: `✅ Reproduciendo después de ${retryCount} reintento(s)` });
+                nowPlayingEmbed.setFooter({ text: `✅ Reproduciendo después de ${retryCount} reintento(s) - Anti-bloqueo activo` });
             }
 
             queue.textChannel.send({ embeds: [nowPlayingEmbed], components: [controlRow] });
@@ -189,21 +237,27 @@ async function playMusic(queue, retryCount = 0) {
     } catch (error) {
         console.error('Error reproduciendo música:', error.message);
         
-        // Verificar si es el error específico de YouTube
+        // Detección mejorada de errores de YouTube
         const isYouTubeError = error.message.includes('Sign in to confirm') || 
                               error.message.includes('While getting info from url') ||
-                              error.message.includes('Video unavailable');
+                              error.message.includes('Video unavailable') ||
+                              error.message.includes('blocked') ||
+                              error.message.includes('429') ||
+                              error.message.includes('403');
         
-        if (isYouTubeError && retryCount < 3) {
+        // Incrementar límite de reintentos para errores de YouTube
+        if (isYouTubeError && retryCount < 4) { // Aumentado de 3 a 4
             const nextRetry = retryCount + 1;
-            const waitTime = Math.min(5 * nextRetry, 15); // Max 15 segundos
+            const waitTimes = [5, 10, 20, 30]; // Tiempos progresivos
+            const waitTime = waitTimes[Math.min(nextRetry - 1, waitTimes.length - 1)];
             
-            console.log(`Reintentando reproducción... Intento ${nextRetry}/3 en ${waitTime}s`);
+            console.log(`Reintentando reproducción... Intento ${nextRetry}/4 en ${waitTime}s`);
             
             if (queue.textChannel) {
-                const retryEmbed = createInfoEmbed('🔄 Reintentando...', 
-                    `YouTube bloqueó la solicitud. Reintentando en ${waitTime} segundos...\n` +
-                    `**Intento ${nextRetry}/3**`
+                const retryEmbed = createInfoEmbed('🔄 Evadiendo bloqueo de YouTube...', 
+                    `Detectado bloqueo temporal. Cambiando configuración...\n` +
+                    `**Intento ${nextRetry}/4** - Espera: ${waitTime}s\n` +
+                    `🛡️ Sistema anti-bloqueo activo`
                 );
                 queue.textChannel.send({ embeds: [retryEmbed] });
             }
@@ -212,21 +266,24 @@ async function playMusic(queue, retryCount = 0) {
             return;
         }
         
-        // Si falló después de varios intentos o es otro tipo de error
+        // Error final después de todos los intentos
         console.log(`Saltando canción después de ${retryCount} reintentos`);
         
         if (queue.textChannel) {
-            const playErrorEmbed = createErrorEmbed('❌ Error de reproducción', 
-                retryCount >= 3 ? 
-                `No se pudo reproducir **${song.title}** después de ${retryCount} intentos.\n` +
-                `YouTube está bloqueando las solicitudes. Saltando a la siguiente...` :
-                `No se pudo reproducir **${song.title}**. Saltando a la siguiente canción...`
+            const playErrorEmbed = createErrorEmbed('❌ Error persistente', 
+                retryCount >= 4 ? 
+                `YouTube está bloqueando fuertemente las solicitudes.\n` +
+                `**${song.title}** - Saltando después de 4 intentos.\n` +
+                `💡 Intenta con otra canción o espera unos minutos.` :
+                `No se pudo reproducir **${song.title}**\n` +
+                `Error: ${error.message.substring(0, 100)}...`
             );
             queue.textChannel.send({ embeds: [playErrorEmbed] });
         }
         
-        // Esperar un poco antes de saltar a la siguiente
-        setTimeout(() => playMusic(queue, 0), 2000);
+        // Esperar más tiempo antes de la siguiente canción si fue error de YouTube
+        const skipDelay = isYouTubeError ? 5000 : 2000;
+        setTimeout(() => playMusic(queue, 0), skipDelay);
     }
 }
 
@@ -558,5 +615,17 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 HTTP Server running on port ${PORT}`);
 });
+
+setInterval(() => {
+    // Limpiar conexiones muertas
+    for (const [guildId, queue] of queues) {
+        if (queue.connection && queue.connection.state.status === 'destroyed') {
+            console.log(`Limpiando conexión muerta para guild ${guildId}`);
+            queues.delete(guildId);
+        }
+    }
+}, 300000); // Cada 5 minutos
+
+console.log('🛡️ Sistema anti-bloqueo YouTube activado');
 
 client.login(TOKEN);

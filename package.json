@@ -13,7 +13,7 @@
     "bot",
     "youtube"
   ],
-  "author": "Tu Nombre",
+  "author": "AldairH",
   "license": "MIT",
   "dependencies": {
     "@discordjs/voice": "^0.16.1",
