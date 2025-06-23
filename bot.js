@@ -39,17 +39,37 @@ const player = new Player(client, {
 // Registrar extractores con configuración mejorada
 async function setupExtractors() {
     try {
-        // Extractor de YouTube mejorado
-        await player.extractors.register(YoutubeiExtractor, {
-            authentication: process.env.YOUTUBE_COOKIE || undefined, // Opcional: cookies de YouTube
-        });
+        console.log('🔧 Iniciando configuración de extractores...');
         
-        // Cargar extractores por defecto
-        await player.extractors.loadDefault((ext) => ext !== 'YouTubeExtractor');
-        console.log('✅ Extractores cargados exitosamente');
+        // PRIMERO: Cargar extractores por defecto
+        await player.extractors.loadDefault();
+        console.log('✅ Extractores por defecto cargados');
+        
+        // SEGUNDO: Registrar YoutubeiExtractor solo si está disponible
+        try {
+            await player.extractors.register(YoutubeiExtractor, {
+                authentication: process.env.YOUTUBE_COOKIE || undefined,
+            });
+            console.log('✅ YoutubeiExtractor registrado');
+        } catch (youtubeError) {
+            console.log('⚠️ YoutubeiExtractor no disponible:', youtubeError.message);
+            console.log('📝 Continuando con extractores básicos...');
+        }
+        
+        // Verificar extractores registrados
+        console.log(`📊 Total de extractores disponibles: ${player.extractors.size}`);
+        console.log('📋 Extractores registrados:', Array.from(player.extractors.keys()).join(', '));
+        
     } catch (error) {
-        console.error('⚠️ Error cargando extractores:', error.message);
-        console.log('📝 Continuando con extractores básicos...');
+        console.error('❌ Error crítico cargando extractores:', error.message);
+        
+        // Fallback: intentar solo extractores básicos
+        try {
+            await player.extractors.loadDefault();
+            console.log('✅ Fallback: extractores básicos cargados');
+        } catch (fallbackError) {
+            console.error('💥 Error crítico: no se pudieron cargar extractores básicos:', fallbackError.message);
+        }
     }
 }
 
@@ -183,9 +203,16 @@ player.events.on('playerError', (queue, error) => {
 client.once('ready', async () => {
     console.log(`🤖 ${client.user.tag} está conectado!`);
     
-    // Configurar extractores
+    // Configurar extractores con mejor manejo de errores
     await setupExtractors();
     
+    // Verificar estado final
+    if (player.extractors.size === 0) {
+        console.error('💥 CRÍTICO: No hay extractores disponibles. El bot no funcionará.');
+        console.log('🔍 Revisa las dependencias: npm list @discord-player/extractor');
+    } else {
+        console.log('🎉 Sistema de extracción listo para usar');
+    }
     const commands = [
         new SlashCommandBuilder()
             .setName('play')
