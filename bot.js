@@ -36,6 +36,10 @@ const player = new Player(client, {
     extractorTimeout: 30000, // Timeout de 30 segundos
 });
 
+const { useFFmpeg } = require('@discord-player/ffmpeg');
+useFFmpeg(); // ← aquí activa el backend de FFmpeg para reproducción
+
+
 // Registrar extractores con configuración mejorada
 const { DefaultExtractors } = require('@discord-player/extractor');
 
