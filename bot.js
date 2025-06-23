@@ -37,15 +37,17 @@ const player = new Player(client, {
 });
 
 // Registrar extractores con configuración mejorada
+const { DefaultExtractors } = require('@discord-player/extractor');
+
 async function setupExtractors() {
     try {
-        // Solo extractores por defecto, nada más
-        await player.extractors.loadDefault();
-        console.log('✅ Extractores básicos cargados:', player.extractors.size);
+        await player.extractors.loadMulti(DefaultExtractors);
+        console.log('✅ Extractores cargados:', player.extractors.size);
     } catch (error) {
-        console.error('💥 Error fatal:', error.message);
+        console.error('💥 Error fatal al cargar extractores:', error.message);
     }
 }
+
 
 // Funciones de utilidad (mantener las mismas)
 function createErrorEmbed(title, description) {
