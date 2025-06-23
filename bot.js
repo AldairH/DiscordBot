@@ -110,18 +110,31 @@ async function playMusic(queue, retryCount = 0) {
     }
 
     try {
-        // Añadir un pequeño delay para evitar spam de requests
+        // Añadir delay progresivo para evitar spam
         if (retryCount > 0) {
-            await new Promise(resolve => setTimeout(resolve, 2000 * retryCount));
+            const delay = Math.min(5000 * retryCount, 30000); // Max 30 segundos
+            console.log(`Esperando ${delay/1000} segundos antes del reintento ${retryCount}`);
+            await new Promise(resolve => setTimeout(resolve, delay));
         }
 
-        const stream = await play.stream(song.url, { 
-            quality: 2,
-            // Opciones adicionales para evitar detección
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        // Intentar con diferentes opciones de calidad
+        let stream;
+        const qualities = [1, 2, 0]; // Probar diferentes calidades
+        
+        for (let quality of qualities) {
+            try {
+                stream = await play.stream(song.url, { 
+                    quality: quality,
+                    discordPlayerCompatibility: true
+                });
+                break;
+            } catch (qualityError) {
+                if (quality === qualities[qualities.length - 1]) {
+                    throw qualityError;
+                }
+                console.log(`Calidad ${quality} falló, probando siguiente...`);
             }
-        });
+        }
         
         const resource = createAudioResource(stream.stream, {
             inputType: stream.type
@@ -165,35 +178,55 @@ async function playMusic(queue, retryCount = 0) {
                         .setStyle(queue.loop ? ButtonStyle.Success : ButtonStyle.Secondary)
                 );
 
+            // Si es un reintento exitoso, mencionar que funcionó
+            if (retryCount > 0) {
+                nowPlayingEmbed.setFooter({ text: `✅ Reproduciendo después de ${retryCount} reintento(s)` });
+            }
+
             queue.textChannel.send({ embeds: [nowPlayingEmbed], components: [controlRow] });
         }
 
     } catch (error) {
-        console.error('Error reproduciendo música:', error);
+        console.error('Error reproduciendo música:', error.message);
         
-        // Si es el error de "Sign in to confirm you're not a bot" y no hemos reintentado mucho
-        if (error.message.includes('Sign in to confirm') && retryCount < 3) {
-            console.log(`Reintentando reproducción... Intento ${retryCount + 1}/3`);
+        // Verificar si es el error específico de YouTube
+        const isYouTubeError = error.message.includes('Sign in to confirm') || 
+                              error.message.includes('While getting info from url') ||
+                              error.message.includes('Video unavailable');
+        
+        if (isYouTubeError && retryCount < 3) {
+            const nextRetry = retryCount + 1;
+            const waitTime = Math.min(5 * nextRetry, 15); // Max 15 segundos
+            
+            console.log(`Reintentando reproducción... Intento ${nextRetry}/3 en ${waitTime}s`);
+            
             if (queue.textChannel) {
-                const retryEmbed = createInfoEmbed('Reintentando...', `YouTube está bloqueando las solicitudes. Reintentando en ${2 * (retryCount + 1)} segundos...`);
+                const retryEmbed = createInfoEmbed('🔄 Reintentando...', 
+                    `YouTube bloqueó la solicitud. Reintentando en ${waitTime} segundos...\n` +
+                    `**Intento ${nextRetry}/3**`
+                );
                 queue.textChannel.send({ embeds: [retryEmbed] });
             }
-            setTimeout(() => playMusic(queue, retryCount + 1), 2000 * (retryCount + 1));
+            
+            setTimeout(() => playMusic(queue, nextRetry), waitTime * 1000);
             return;
         }
         
-        // Si falló después de varios intentos o es otro error
+        // Si falló después de varios intentos o es otro tipo de error
+        console.log(`Saltando canción después de ${retryCount} reintentos`);
+        
         if (queue.textChannel) {
-            const playErrorEmbed = createErrorEmbed('Error', 
+            const playErrorEmbed = createErrorEmbed('❌ Error de reproducción', 
                 retryCount >= 3 ? 
-                'No se pudo reproducir esta canción después de varios intentos. Saltando a la siguiente...' :
-                'No se pudo reproducir esta canción. Saltando a la siguiente...'
+                `No se pudo reproducir **${song.title}** después de ${retryCount} intentos.\n` +
+                `YouTube está bloqueando las solicitudes. Saltando a la siguiente...` :
+                `No se pudo reproducir **${song.title}**. Saltando a la siguiente canción...`
             );
             queue.textChannel.send({ embeds: [playErrorEmbed] });
         }
         
-        // Saltar a la siguiente canción
-        setTimeout(() => playMusic(queue, 0), 1000);
+        // Esperar un poco antes de saltar a la siguiente
+        setTimeout(() => playMusic(queue, 0), 2000);
     }
 }
 
