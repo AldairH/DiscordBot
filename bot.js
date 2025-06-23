@@ -39,37 +39,11 @@ const player = new Player(client, {
 // Registrar extractores con configuración mejorada
 async function setupExtractors() {
     try {
-        console.log('🔧 Iniciando configuración de extractores...');
-        
-        // PRIMERO: Cargar extractores por defecto con la nueva API
-        await player.extractors.loadMulti(DefaultExtractors);
-        console.log('✅ Extractores por defecto cargados');
-        
-        // SEGUNDO: Registrar YoutubeiExtractor solo si está disponible
-        try {
-            await player.extractors.register(YoutubeiExtractor, {
-                authentication: process.env.YOUTUBE_COOKIE || undefined,
-            });
-            console.log('✅ YoutubeiExtractor registrado');
-        } catch (youtubeError) {
-            console.log('⚠️ YoutubeiExtractor no disponible:', youtubeError.message);
-            console.log('📝 Continuando con extractores básicos...');
-        }
-        
-        // Verificar extractores registrados
-        console.log(`📊 Total de extractores disponibles: ${player.extractors.size}`);
-        console.log('📋 Extractores registrados:', Array.from(player.extractors.keys()).join(', '));
-        
+        // Solo extractores por defecto, nada más
+        await player.extractors.loadDefault();
+        console.log('✅ Extractores básicos cargados:', player.extractors.size);
     } catch (error) {
-        console.error('❌ Error crítico cargando extractores:', error.message);
-        
-        // Fallback: intentar solo extractores básicos
-        try {
-            await player.extractors.loadMulti(DefaultExtractors);
-            console.log('✅ Fallback: extractores básicos cargados');
-        } catch (fallbackError) {
-            console.error('💥 Error crítico: no se pudieron cargar extractores básicos:', fallbackError.message);
-        }
+        console.error('💥 Error fatal:', error.message);
     }
 }
 
