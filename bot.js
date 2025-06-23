@@ -509,4 +509,21 @@ process.on('unhandledRejection', error => {
     console.error('Unhandled promise rejection:', error);
 });
 
+const http = require('http');
+const PORT = process.env.PORT || 3000;
+
+const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+        status: 'Discord Music Bot Running',
+        uptime: Math.floor(process.uptime()),
+        timestamp: new Date().toISOString(),
+        guilds: client.guilds ? client.guilds.cache.size : 0
+    }));
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`🌐 HTTP Server running on port ${PORT}`);
+});
+
 client.login(TOKEN);
