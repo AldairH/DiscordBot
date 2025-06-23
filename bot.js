@@ -30,7 +30,7 @@ const player = new Player(client, {
             }
         }
     },
-    skipFFmpeg: false,
+    skipFFmpeg: true,
     // Configuraciones adicionales para evitar bloqueos
     extractorRetryLimit: 3,  // Reintentos automáticos
     extractorTimeout: 30000, // Timeout de 30 segundos
