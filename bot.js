@@ -41,8 +41,8 @@ async function setupExtractors() {
     try {
         console.log('🔧 Iniciando configuración de extractores...');
         
-        // PRIMERO: Cargar extractores por defecto
-        await player.extractors.loadDefault();
+        // PRIMERO: Cargar extractores por defecto con la nueva API
+        await player.extractors.loadMulti(DefaultExtractors);
         console.log('✅ Extractores por defecto cargados');
         
         // SEGUNDO: Registrar YoutubeiExtractor solo si está disponible
@@ -65,7 +65,7 @@ async function setupExtractors() {
         
         // Fallback: intentar solo extractores básicos
         try {
-            await player.extractors.loadDefault();
+            await player.extractors.loadMulti(DefaultExtractors);
             console.log('✅ Fallback: extractores básicos cargados');
         } catch (fallbackError) {
             console.error('💥 Error crítico: no se pudieron cargar extractores básicos:', fallbackError.message);
