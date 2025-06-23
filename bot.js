@@ -238,220 +238,199 @@ client.once('ready', async () => {
 });
 
 client.on('interactionCreate', async interaction => {
-    if (!interaction.isChatInputCommand()) return;
-
-    if (!ALLOWED_SERVERS.includes(interaction.guildId)) {
-        return interaction.reply({ 
-            content: '❌ Este bot no está autorizado en este servidor.',
-            ephemeral: true 
-        });
-    }
-
-    const { commandName, options, member, guild, channel } = interaction;
-
-    if (!member.voice.channel && ['play', 'skip', 'stop', 'pause'].includes(commandName)) {
-        return interaction.reply({ 
-            content: '❌ Debes estar en un canal de voz para usar este comando.',
-            ephemeral: true 
-        });
-    }
-
-    const queue = player.nodes.get(guild.id);
-
-    switch (commandName) {
-        case 'play':
-            await interaction.deferReply();
-            
-            try {
-                const query = options.getString('cancion');
-                
-                // Crear o obtener la cola
-                const { track } = await player.play(member.voice.channel, query, {
-                    nodeOptions: {
-                        metadata: channel,
-                        noEmitWhenAudioTracksAdd: false,
-                        leaveOnStop: false,
-                        leaveOnStopCooldown: 300000,
-                        leaveOnEnd: false,
-                        leaveOnEndCooldown: 300000,
-                        leaveOnEmpty: true,
-                        leaveOnEmptyCooldown: 60000,
-                        skipOnNoStream: true,
-                        // Configuración anti-bloqueo
-                        maxSize: 100,
-                        maxHistorySize: 100,
-                        volume: 50,
-                        // Configuración de búsqueda mejorada
-                        searchResultsLimit: 1,
-                        fallbackSearch: true
-                    },
-                    // Opciones de búsqueda con múltiples fuentes
-                    searchEngine: 'auto', // Usar múltiples fuentes automáticamente
-                    requestedBy: interaction.user,
-                    extractorRetryLimit: 3
-                });
-
-                const embed = createSuccessEmbed('🎵 Procesando...', 
-                    `Buscando: **${query}**\n` +
-                    '🛡️ Sistema anti-bloqueo activo'
-                );
-                
-                await interaction.followUp({ embeds: [embed] });
-
-            } catch (error) {
-                console.error('Error en comando play:', error);
-                
-                const isYouTubeError = error.message.includes('Sign in') || 
-                                      error.message.includes('blocked') ||
-                                      error.message.includes('unavailable');
-                
-                const errorEmbed = createErrorEmbed('❌ Error de búsqueda', 
-                    isYouTubeError ? 
-                    '🛡️ YouTube bloqueó la búsqueda. Intenta:\n' +
-                    '• Esperar 1-2 minutos\n' +
-                    '• Usar un nombre más específico\n' +
-                    '• Probar con otra canción' :
-                    'No se pudo encontrar la canción. Verifica el nombre o URL.'
-                );
-                
-                await interaction.followUp({ embeds: [errorEmbed] });
-            }
-            break;
-
-        case 'skip':
-            if (!queue || !queue.isPlaying()) {
-                return interaction.reply({ content: '❌ No hay música reproduciéndose.', ephemeral: true });
-            }
-
-            queue.node.skip();
-            await interaction.reply('⏭️ Canción saltada.');
-            break;
-
-        case 'stop':
-            if (!queue) {
-                return interaction.reply({ content: '❌ No hay música reproduciéndose.', ephemeral: true });
-            }
-
-            queue.delete();
-            await interaction.reply('⏹️ Música parada y cola limpiada.');
-            break;
-
-        case 'pause':
-            if (!queue || !queue.isPlaying()) {
-                return interaction.reply({ content: '❌ No hay música reproduciéndose.', ephemeral: true });
-            }
-
-            if (queue.node.isPaused()) {
-                queue.node.resume();
-                await interaction.reply('▶️ Música reanudada.');
-            } else {
-                queue.node.pause();
-                await interaction.reply('⏸️ Música pausada.');
-            }
-            break;
-
-        case 'queue':
-            if (!queue || queue.tracks.data.length === 0) {
-                return interaction.reply({ content: '📝 La cola está vacía.', ephemeral: true });
-            }
-
-            let queueList = '';
-            queue.tracks.data.slice(0, 10).forEach((track, index) => {
-                queueList += `${index + 1}. **${track.title}** - ${track.author}\n`;
+    // Slash commands
+    if (interaction.isChatInputCommand()) {
+        if (!ALLOWED_SERVERS.includes(interaction.guildId)) {
+            return interaction.reply({
+                content: '❌ Este bot no está autorizado en este servidor.',
+                ephemeral: true
             });
+        }
 
-            if (queue.tracks.data.length > 10) {
-                queueList += `\n... y ${queue.tracks.data.length - 10} más`;
+        const { commandName, options, member, guild, channel } = interaction;
+
+        const requiresVoice = ['play', 'skip', 'stop', 'pause'];
+        if (requiresVoice.includes(commandName) && !member.voice.channel) {
+            return interaction.reply({
+                content: '❌ Debes estar en un canal de voz para usar este comando.',
+                ephemeral: true
+            });
+        }
+
+        const queue = player.nodes.get(guild.id);
+
+        try {
+            switch (commandName) {
+                case 'play':
+                    if (!interaction.deferred && !interaction.replied) {
+                        await interaction.deferReply();
+                    }
+
+                    const query = options.getString('cancion');
+
+                    const { track } = await player.play(member.voice.channel, query, {
+                        nodeOptions: {
+                            metadata: channel,
+                            volume: 50,
+                            leaveOnStop: false,
+                            leaveOnEnd: false,
+                            leaveOnEmpty: true,
+                            skipOnNoStream: true,
+                            searchResultsLimit: 1,
+                            fallbackSearch: true,
+                        },
+                        requestedBy: interaction.user,
+                        searchEngine: 'auto'
+                    });
+
+                    const embed = createSuccessEmbed('🎵 Procesando...',
+                        `Buscando: **${query}**\n🛡️ Sistema anti-bloqueo activo`
+                    );
+
+                    await interaction.followUp({ embeds: [embed] });
+                    break;
+
+                case 'skip':
+                    if (!queue || !queue.isPlaying())
+                        return interaction.reply({ content: '❌ No hay música reproduciéndose.', ephemeral: true });
+                    queue.node.skip();
+                    await interaction.reply('⏭️ Canción saltada.');
+                    break;
+
+                case 'stop':
+                    if (!queue)
+                        return interaction.reply({ content: '❌ No hay música reproduciéndose.', ephemeral: true });
+                    queue.delete();
+                    await interaction.reply('⏹️ Música parada y cola limpiada.');
+                    break;
+
+                case 'pause':
+                    if (!queue || !queue.isPlaying())
+                        return interaction.reply({ content: '❌ No hay música reproduciéndose.', ephemeral: true });
+
+                    if (queue.node.isPaused()) {
+                        queue.node.resume();
+                        await interaction.reply('▶️ Música reanudada.');
+                    } else {
+                        queue.node.pause();
+                        await interaction.reply('⏸️ Música pausada.');
+                    }
+                    break;
+
+                case 'queue':
+                    if (!queue || queue.tracks.data.length === 0)
+                        return interaction.reply({ content: '📝 La cola está vacía.', ephemeral: true });
+
+                    let queueList = '';
+                    queue.tracks.data.slice(0, 10).forEach((track, index) => {
+                        queueList += `${index + 1}. **${track.title}** - ${track.author}\n`;
+                    });
+
+                    if (queue.tracks.data.length > 10)
+                        queueList += `\n... y ${queue.tracks.data.length - 10} más`;
+
+                    const queueEmbed = new EmbedBuilder()
+                        .setColor('#0099ff')
+                        .setTitle('📝 Cola de Música')
+                        .setDescription(queueList)
+                        .addFields(
+                            { name: '🎵 Reproduciendo', value: queue.currentTrack?.title || 'Nada', inline: true },
+                            { name: '📊 Total en cola', value: `${queue.tracks.data.length}`, inline: true },
+                            { name: '🔁 Loop', value: queue.repeatMode === 1 ? 'Activado' : 'Desactivado', inline: true }
+                        );
+
+                    await interaction.reply({ embeds: [queueEmbed] });
+                    break;
+
+                case 'loop':
+                    if (!queue)
+                        return interaction.reply({ content: '❌ No hay música reproduciéndose.', ephemeral: true });
+
+                    const newLoopMode = queue.repeatMode === 1 ? 0 : 1;
+                    queue.setRepeatMode(newLoopMode);
+                    await interaction.reply(`🔁 Loop ${newLoopMode === 1 ? 'activado' : 'desactivado'}.`);
+                    break;
+
+                case 'shuffle':
+                    if (!queue || queue.tracks.data.length === 0)
+                        return interaction.reply({ content: '❌ No hay canciones en la cola para mezclar.', ephemeral: true });
+
+                    queue.tracks.shuffle();
+                    await interaction.reply('🔀 Cola mezclada aleatoriamente.');
+                    break;
+
+                case 'clear':
+                    if (!queue || queue.tracks.data.length === 0)
+                        return interaction.reply({ content: '❌ La cola ya está vacía.', ephemeral: true });
+
+                    const count = queue.tracks.data.length;
+                    queue.tracks.clear();
+                    await interaction.reply(`🗑️ Se eliminaron ${count} canción(es) de la cola.`);
+                    break;
+
+                case 'disconnect':
+                    if (!queue)
+                        return interaction.reply({ content: '❌ El bot no está conectado.', ephemeral: true });
+
+                    queue.delete();
+                    await interaction.reply('👋 Desconectado del canal de voz.');
+                    break;
             }
+        } catch (error) {
+            console.error('❌ Error en comando:', commandName, error);
 
-            const queueEmbed = new EmbedBuilder()
-                .setColor('#0099ff')
-                .setTitle('📝 Cola de Música')
-                .setDescription(queueList || 'La cola está vacía')
-                .addFields(
-                    { name: '🎵 Reproduciendo', value: queue.currentTrack?.title || 'Nada', inline: true },
-                    { name: '📊 Total en cola', value: `${queue.tracks.data.length}`, inline: true },
-                    { name: '🔁 Loop', value: queue.repeatMode === 1 ? 'Activado' : 'Desactivado', inline: true }
-                );
-
-            await interaction.reply({ embeds: [queueEmbed] });
-            break;
-
-        case 'loop':
-            if (!queue) {
-                return interaction.reply({ content: '❌ No hay música reproduciéndose.', ephemeral: true });
-            }
-
-            const newMode = queue.repeatMode === 1 ? 0 : 1;
-            queue.setRepeatMode(newMode);
-            await interaction.reply(`🔁 Loop ${newMode === 1 ? 'activado' : 'desactivado'}.`);
-            break;
-
-        case 'shuffle':
-            if (!queue || queue.tracks.data.length === 0) {
-                return interaction.reply({ content: '❌ No hay canciones en la cola para mezclar.', ephemeral: true });
-            }
-
-            queue.tracks.shuffle();
-            await interaction.reply('🔀 Cola mezclada aleatoriamente.');
-            break;
-
-        case 'clear':
-            if (!queue || queue.tracks.data.length === 0) {
-                return interaction.reply({ content: '❌ La cola ya está vacía.', ephemeral: true });
-            }
-
-            const clearedCount = queue.tracks.data.length;
-            queue.tracks.clear();
-            await interaction.reply(`🗑️ Se eliminaron ${clearedCount} canción(es) de la cola.`);
-            break;
-
-        case 'disconnect':
-            if (!queue) {
-                return interaction.reply({ content: '❌ El bot no está conectado a ningún canal de voz.', ephemeral: true });
-            }
-
-            queue.delete();
-            await interaction.reply('👋 Desconectado del canal de voz.');
-            break;
-    }
-});
-
-// Manejo de botones (mantener la misma lógica pero adaptada)
-client.on('interactionCreate', async interaction => {
-    if (!interaction.isButton()) return;
-
-    const queue = player.nodes.get(interaction.guildId);
-    if (!queue) return;
-
-    switch (interaction.customId) {
-        case 'pause':
-            if (queue.node.isPaused()) {
-                queue.node.resume();
-                await interaction.reply({ content: '▶️ Música reanudada.', ephemeral: true });
+            const errorEmbed = createErrorEmbed('Error inesperado', 'Ocurrió un error procesando tu comando.');
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({ embeds: [errorEmbed], ephemeral: true });
             } else {
-                queue.node.pause();
-                await interaction.reply({ content: '⏸️ Música pausada.', ephemeral: true });
+                await interaction.followUp({ embeds: [errorEmbed], ephemeral: true });
             }
-            break;
+        }
+    }
 
-        case 'skip':
-            queue.node.skip();
-            await interaction.reply({ content: '⏭️ Canción saltada.', ephemeral: true });
-            break;
+    // Botones de control
+    else if (interaction.isButton()) {
+        const queue = player.nodes.get(interaction.guildId);
+        if (!queue) return;
 
-        case 'stop':
-            queue.delete();
-            await interaction.reply({ content: '⏹️ Música parada y cola limpiada.', ephemeral: true });
-            break;
+        try {
+            switch (interaction.customId) {
+                case 'pause':
+                    if (queue.node.isPaused()) {
+                        queue.node.resume();
+                        await interaction.deferUpdate();
+                    } else {
+                        queue.node.pause();
+                        await interaction.deferUpdate();
+                    }
+                    break;
 
-        case 'loop':
-            const newMode = queue.repeatMode === 1 ? 0 : 1;
-            queue.setRepeatMode(newMode);
-            await interaction.reply({ content: `🔁 Loop ${newMode === 1 ? 'activado' : 'desactivado'}.`, ephemeral: true });
-            break;
+                case 'skip':
+                    queue.node.skip();
+                    await interaction.deferUpdate();
+                    break;
+
+                case 'stop':
+                    queue.delete();
+                    await interaction.deferUpdate();
+                    break;
+
+                case 'loop':
+                    const newMode = queue.repeatMode === 1 ? 0 : 1;
+                    queue.setRepeatMode(newMode);
+                    await interaction.deferUpdate();
+                    break;
+            }
+        } catch (error) {
+            console.error('❌ Error en botón:', error);
+            await interaction.reply({
+                content: '❌ Hubo un problema al procesar tu acción.',
+                ephemeral: true
+            }).catch(() => {});
+        }
     }
 });
+
 
 client.on('error', error => {
     console.error('Error del cliente Discord:', error);
