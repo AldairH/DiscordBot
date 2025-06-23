@@ -1,9 +1,11 @@
 services:
-  - type: web
+  - type: worker
     name: discord-music-bot
     env: node
     buildCommand: npm install
-    startCommand: npm start
+    startCommand: node bot.js
     envVars:
       - key: NODE_ENV
         value: production
+      - key: DISCORD_TOKEN
+        sync: false
