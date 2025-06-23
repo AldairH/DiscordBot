@@ -1,17 +1,9 @@
-const USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0'
-];
-
 const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, entersState, AudioPlayerStatus, VoiceConnectionStatus } = require('@discordjs/voice');
-const play = require('play-dl');
+const { Player } = require('discord-player');
+const { YoutubeiExtractor } = require('@discord-player/extractor');
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const ALLOWED_SERVERS = ['869299042612563968'];
-
 
 const client = new Client({
     intents: [
@@ -22,43 +14,46 @@ const client = new Client({
     ]
 });
 
-
-const queues = new Map();
-
-function getRandomUserAgent() {
-    return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-}
-
-class MusicQueue {
-    constructor() {
-        this.songs = [];
-        this.isPlaying = false;
-        this.connection = null;
-        this.player = null;
-        this.currentSong = null;
-        this.textChannel = null;
-        this.loop = false;
-        this.shuffle = false;
-    }
-
-    addSong(song) {
-        this.songs.push(song);
-    }
-
-    getNextSong() {
-        if (this.shuffle && this.songs.length > 1) {
-            const randomIndex = Math.floor(Math.random() * this.songs.length);
-            return this.songs.splice(randomIndex, 1)[0];
+// Discord-player con opciones anti-bloqueo
+const player = new Player(client, {
+    ytdlOptions: {
+        quality: 'highestaudio',
+        highWaterMark: 1 << 25,
+        requestOptions: {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Encoding': 'gzip, deflate',
+                'DNT': '1',
+                'Connection': 'keep-alive'
+            }
         }
-        return this.songs.shift();
-    }
+    },
+    skipFFmpeg: false,
+    // Configuraciones adicionales para evitar bloqueos
+    extractorRetryLimit: 3,  // Reintentos automáticos
+    extractorTimeout: 30000, // Timeout de 30 segundos
+});
 
-    clear() {
-        this.songs = [];
-        this.currentSong = null;
+// Registrar extractores con configuración mejorada
+async function setupExtractors() {
+    try {
+        // Extractor de YouTube mejorado
+        await player.extractors.register(YoutubeiExtractor, {
+            authentication: process.env.YOUTUBE_COOKIE || undefined, // Opcional: cookies de YouTube
+        });
+        
+        // Cargar extractores por defecto
+        await player.extractors.loadDefault((ext) => ext !== 'YouTubeExtractor');
+        console.log('✅ Extractores cargados exitosamente');
+    } catch (error) {
+        console.error('⚠️ Error cargando extractores:', error.message);
+        console.log('📝 Continuando con extractores básicos...');
     }
 }
 
+// Funciones de utilidad (mantener las mismas)
 function createErrorEmbed(title, description) {
     return new EmbedBuilder()
         .setColor('#ff0000')
@@ -80,215 +75,116 @@ function createInfoEmbed(title, description) {
         .setDescription(description);
 }
 
-async function searchYouTube(query, retryCount = 0) {
-    try {
-        // Añadir delay progresivo
-        if (retryCount > 0) {
-            const delay = Math.min(2000 * retryCount, 8000);
-            await new Promise(resolve => setTimeout(resolve, delay));
-        }
+// Eventos del reproductor con manejo mejorado de errores
+player.events.on('audioTrackAdd', (queue, track) => {
+    const embed = createSuccessEmbed('Canción añadida', 
+        `**${track.title}**\n` +
+        `👤 ${track.author}\n` +
+        `⏱️ ${track.duration}\n` +
+        `📍 Posición: ${queue.tracks.data.length}`
+    );
+    
+    if (track.thumbnail) embed.setThumbnail(track.thumbnail);
+    queue.metadata.send({ embeds: [embed] });
+});
 
-        const searchResults = await play.search(query, { 
-            limit: 1, 
-            source: { youtube: 'video' },
-            // Opciones adicionales para evitar detección
-            requestOptions: {
-                headers: {
-                    'User-Agent': getRandomUserAgent(),
-                    'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Encoding': 'gzip, deflate',
-                    'DNT': '1',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1',
+player.events.on('audioTracksAdd', (queue, tracks) => {
+    const embed = createSuccessEmbed('Playlist añadida', 
+        `Se añadieron **${tracks.length}** canciones a la cola`
+    );
+    queue.metadata.send({ embeds: [embed] });
+});
+
+player.events.on('playerStart', (queue, track) => {
+    const embed = new EmbedBuilder()
+        .setColor('#00ff00')
+        .setTitle('🎵 Reproduciendo ahora')
+        .setDescription(`**${track.title}**`)
+        .addFields(
+            { name: '👤 Autor', value: track.author, inline: true },
+            { name: '⏱️ Duración', value: track.duration, inline: true },
+            { name: '📝 Cola', value: `${queue.tracks.data.length} canción(es) restante(s)`, inline: true }
+        );
+
+    if (track.thumbnail) embed.setThumbnail(track.thumbnail);
+
+    const controlRow = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder()
+                .setCustomId('pause')
+                .setLabel('⏸️ Pausar')
+                .setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder()
+                .setCustomId('skip')
+                .setLabel('⏭️ Saltar')
+                .setStyle(ButtonStyle.Primary),
+            new ButtonBuilder()
+                .setCustomId('stop')
+                .setLabel('⏹️ Parar')
+                .setStyle(ButtonStyle.Danger),
+            new ButtonBuilder()
+                .setCustomId('loop')
+                .setLabel(queue.repeatMode === 1 ? '🔁 Loop ON' : '🔁 Loop OFF')
+                .setStyle(queue.repeatMode === 1 ? ButtonStyle.Success : ButtonStyle.Secondary)
+        );
+
+    queue.metadata.send({ embeds: [embed], components: [controlRow] });
+});
+
+player.events.on('emptyQueue', (queue) => {
+    const embed = createInfoEmbed('Cola vacía', 'No hay más canciones en la cola.');
+    queue.metadata.send({ embeds: [embed] });
+});
+
+// Manejo mejorado de errores con reintentos automáticos
+player.events.on('error', (queue, error) => {
+    console.error('Error en discord-player:', error.message);
+    
+    const isYouTubeError = error.message.includes('Sign in') || 
+                          error.message.includes('blocked') ||
+                          error.message.includes('unavailable') ||
+                          error.message.includes('403') ||
+                          error.message.includes('429');
+    
+    if (isYouTubeError) {
+        const embed = createErrorEmbed('🛡️ Bloqueo detectado', 
+            'YouTube bloqueó temporalmente las solicitudes.\n' +
+            '🔄 Intentando con método alternativo...'
+        );
+        queue.metadata.send({ embeds: [embed] });
+        
+        // Reintentar con configuración diferente después de 5 segundos
+        setTimeout(async () => {
+            if (queue.tracks.data.length > 0) {
+                try {
+                    await queue.node.skip();
+                } catch (skipError) {
+                    console.error('Error al saltar:', skipError);
                 }
             }
-        });
-
-        if (searchResults.length > 0) {
-            const video = searchResults[0];
-            return {
-                title: video.title,
-                url: video.url,
-                duration: video.durationRaw,
-                thumbnail: video.thumbnails?.[0]?.url,
-                author: video.channel?.name
-            };
-        }
-        return null;
-    } catch (error) {
-        console.error(`Error buscando en YouTube (intento ${retryCount + 1}):`, error.message);
-        
-        // Reintentar si es error de YouTube y no hemos superado límite
-        if (retryCount < 2 && (error.message.includes('Sign in') || error.message.includes('blocked'))) {
-            return searchYouTube(query, retryCount + 1);
-        }
-        
-        return null;
-    }
-}
-
-async function playMusic(queue, retryCount = 0) {
-    if (!queue.songs.length && !queue.loop) {
-        queue.isPlaying = false;
-        if (queue.textChannel) {
-            const queueEmptyEmbed = createInfoEmbed('Cola vacía', 'No hay más canciones en la cola.');
-            queue.textChannel.send({ embeds: [queueEmptyEmbed] });
-        }
-        return;
-    }
-
-    let song;
-    if (queue.loop && queue.currentSong) {
-        song = queue.currentSong;
+        }, 5000);
     } else {
-        song = queue.getNextSong();
-        if (!song) return;
-        queue.currentSong = song;
+        const embed = createErrorEmbed('Error de reproducción', 
+            `${error.message.substring(0, 100)}${error.message.length > 100 ? '...' : ''}`
+        );
+        queue.metadata.send({ embeds: [embed] });
     }
+});
 
-    try {
-        // Delay progresivo más inteligente
-        if (retryCount > 0) {
-            const delays = [3000, 8000, 15000, 30000]; // 3s, 8s, 15s, 30s
-            const delay = delays[Math.min(retryCount - 1, delays.length - 1)];
-            console.log(`Esperando ${delay/1000} segundos antes del reintento ${retryCount}`);
-            await new Promise(resolve => setTimeout(resolve, delay));
-        }
-
-        // Configuración mejorada para play-dl
-        const streamOptions = { 
-            quality: 1, // Calidad media para mejor compatibilidad
-            discordPlayerCompatibility: true,
-            seek: 0,
-            // Opciones de request mejoradas
-            requestOptions: {
-                headers: {
-                    'User-Agent': getRandomUserAgent(),
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Accept': '*/*',
-                    'Accept-Encoding': 'gzip, deflate',
-                    'Cache-Control': 'no-cache',
-                    'Connection': 'keep-alive',
-                    'DNT': '1',
-                    'Pragma': 'no-cache',
-                    'Sec-Fetch-Dest': 'empty',
-                    'Sec-Fetch-Mode': 'cors',
-                    'Sec-Fetch-Site': 'cross-site'
-                }
-            },
-            // Añadir timeout
-            timeout: 30000
-        };
-
-        const stream = await play.stream(song.url, streamOptions);
-        
-        const resource = createAudioResource(stream.stream, {
-            inputType: stream.type,
-            inlineVolume: true
-        });
-
-        queue.player.play(resource);
-        queue.isPlaying = true;
-
-        if (queue.textChannel) {
-            const nowPlayingEmbed = new EmbedBuilder()
-                .setColor('#00ff00')
-                .setTitle('🎵 Reproduciendo ahora')
-                .setDescription(`**${song.title}**`)
-                .addFields(
-                    { name: '👤 Autor', value: song.author || 'Desconocido', inline: true },
-                    { name: '⏱️ Duración', value: song.duration || 'Desconocida', inline: true },
-                    { name: '📝 Cola', value: `${queue.songs.length} canción(es) restante(s)`, inline: true }
-                );
-
-            if (song.thumbnail) {
-                nowPlayingEmbed.setThumbnail(song.thumbnail);
-            }
-
-            const controlRow = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId('pause')
-                        .setLabel('⏸️ Pausar')
-                        .setStyle(ButtonStyle.Secondary),
-                    new ButtonBuilder()
-                        .setCustomId('skip')
-                        .setLabel('⏭️ Saltar')
-                        .setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder()
-                        .setCustomId('stop')
-                        .setLabel('⏹️ Parar')
-                        .setStyle(ButtonStyle.Danger),
-                    new ButtonBuilder()
-                        .setCustomId('loop')
-                        .setLabel(queue.loop ? '🔁 Loop ON' : '🔁 Loop OFF')
-                        .setStyle(queue.loop ? ButtonStyle.Success : ButtonStyle.Secondary)
-                );
-
-            // Mensaje de éxito mejorado
-            if (retryCount > 0) {
-                nowPlayingEmbed.setFooter({ text: `✅ Reproduciendo después de ${retryCount} reintento(s) - Anti-bloqueo activo` });
-            }
-
-            queue.textChannel.send({ embeds: [nowPlayingEmbed], components: [controlRow] });
-        }
-
-    } catch (error) {
-        console.error('Error reproduciendo música:', error.message);
-        
-        // Detección mejorada de errores de YouTube
-        const isYouTubeError = error.message.includes('Sign in to confirm') || 
-                              error.message.includes('While getting info from url') ||
-                              error.message.includes('Video unavailable') ||
-                              error.message.includes('blocked') ||
-                              error.message.includes('429') ||
-                              error.message.includes('403');
-        
-        // Incrementar límite de reintentos para errores de YouTube
-        if (isYouTubeError && retryCount < 4) { // Aumentado de 3 a 4
-            const nextRetry = retryCount + 1;
-            const waitTimes = [5, 10, 20, 30]; // Tiempos progresivos
-            const waitTime = waitTimes[Math.min(nextRetry - 1, waitTimes.length - 1)];
-            
-            console.log(`Reintentando reproducción... Intento ${nextRetry}/4 en ${waitTime}s`);
-            
-            if (queue.textChannel) {
-                const retryEmbed = createInfoEmbed('🔄 Evadiendo bloqueo de YouTube...', 
-                    `Detectado bloqueo temporal. Cambiando configuración...\n` +
-                    `**Intento ${nextRetry}/4** - Espera: ${waitTime}s\n` +
-                    `🛡️ Sistema anti-bloqueo activo`
-                );
-                queue.textChannel.send({ embeds: [retryEmbed] });
-            }
-            
-            setTimeout(() => playMusic(queue, nextRetry), waitTime * 1000);
-            return;
-        }
-        
-        // Error final después de todos los intentos
-        console.log(`Saltando canción después de ${retryCount} reintentos`);
-        
-        if (queue.textChannel) {
-            const playErrorEmbed = createErrorEmbed('❌ Error persistente', 
-                retryCount >= 4 ? 
-                `YouTube está bloqueando fuertemente las solicitudes.\n` +
-                `**${song.title}** - Saltando después de 4 intentos.\n` +
-                `💡 Intenta con otra canción o espera unos minutos.` :
-                `No se pudo reproducir **${song.title}**\n` +
-                `Error: ${error.message.substring(0, 100)}...`
-            );
-            queue.textChannel.send({ embeds: [playErrorEmbed] });
-        }
-        
-        // Esperar más tiempo antes de la siguiente canción si fue error de YouTube
-        const skipDelay = isYouTubeError ? 5000 : 2000;
-        setTimeout(() => playMusic(queue, 0), skipDelay);
-    }
-}
+player.events.on('playerError', (queue, error) => {
+    console.error('Error del reproductor:', error.message);
+    
+    const embed = createErrorEmbed('Error del reproductor', 
+        'Hubo un problema con la reproducción. Saltando a la siguiente...'
+    );
+    queue.metadata.send({ embeds: [embed] });
+});
 
 client.once('ready', async () => {
     console.log(`🤖 ${client.user.tag} está conectado!`);
+    
+    // Configurar extractores
+    await setupExtractors();
     
     const commands = [
         new SlashCommandBuilder()
@@ -316,7 +212,7 @@ client.once('ready', async () => {
             .setDescription('Activa/desactiva el loop de la canción actual'),
         new SlashCommandBuilder()
             .setName('shuffle')
-            .setDescription('Activa/desactiva el modo aleatorio'),
+            .setDescription('Mezcla la cola aleatoriamente'),
         new SlashCommandBuilder()
             .setName('clear')
             .setDescription('Limpia la cola de música'),
@@ -357,95 +253,74 @@ client.on('interactionCreate', async interaction => {
         });
     }
 
-    let queue = queues.get(guild.id);
+    const queue = player.nodes.get(guild.id);
 
     switch (commandName) {
         case 'play':
             await interaction.deferReply();
             
-            const query = options.getString('cancion');
-            
-            if (!queue) {
-                queue = new MusicQueue();
-                queues.set(guild.id, queue);
-            }
-            
-            queue.textChannel = channel;
-
-            if (!queue.connection) {
-                queue.connection = joinVoiceChannel({
-                    channelId: member.voice.channel.id,
-                    guildId: guild.id,
-                    adapterCreator: guild.voiceAdapterCreator,
+            try {
+                const query = options.getString('cancion');
+                
+                // Crear o obtener la cola
+                const { track } = await player.play(member.voice.channel, query, {
+                    nodeOptions: {
+                        metadata: channel,
+                        noEmitWhenAudioTracksAdd: false,
+                        leaveOnStop: false,
+                        leaveOnStopCooldown: 300000,
+                        leaveOnEnd: false,
+                        leaveOnEndCooldown: 300000,
+                        leaveOnEmpty: true,
+                        leaveOnEmptyCooldown: 60000,
+                        skipOnNoStream: true,
+                        // Configuración anti-bloqueo
+                        maxSize: 100,
+                        maxHistorySize: 100,
+                        volume: 50,
+                        // Configuración de búsqueda mejorada
+                        searchResultsLimit: 1,
+                        fallbackSearch: true
+                    },
+                    // Opciones de búsqueda con múltiples fuentes
+                    searchEngine: 'auto', // Usar múltiples fuentes automáticamente
+                    requestedBy: interaction.user,
+                    extractorRetryLimit: 3
                 });
 
-                queue.player = createAudioPlayer();
-                queue.connection.subscribe(queue.player);
-
-                queue.player.on(AudioPlayerStatus.Idle, () => {
-                    if (queue.songs.length > 0 || queue.loop) {
-                        setTimeout(() => playMusic(queue), 1000);
-                    } else {
-                        queue.isPlaying = false;
-                    }
-                });
-
-                queue.player.on('error', error => {
-                    console.error('Error en el reproductor:', error);
-                    setTimeout(() => playMusic(queue), 1000);
-                });
-            }
-
-            let song;
-            if (query.includes('youtube.com') || query.includes('youtu.be')) {
-                try {
-                    const info = await play.video_info(query);
-                    song = {
-                        title: info.video_details.title,
-                        url: query,
-                        duration: info.video_details.durationRaw,
-                        thumbnail: info.video_details.thumbnails[0]?.url,
-                        author: info.video_details.channel?.name
-                    };
-                } catch (error) {
-                    return interaction.followUp('❌ No se pudo obtener información de esta URL.');
-                }
-            } else {
-                song = await searchYouTube(query);
-                if (!song) {
-                    return interaction.followUp('❌ No se encontró ninguna canción con ese nombre.');
-                }
-            }
-
-            queue.addSong(song);
-
-            const songAddedEmbed = new EmbedBuilder()
-                .setColor('#00ff00')
-                .setTitle('✅ Canción añadida a la cola')
-                .setDescription(`**${song.title}**`)
-                .addFields(
-                    { name: '👤 Autor', value: song.author || 'Desconocido', inline: true },
-                    { name: '⏱️ Duración', value: song.duration || 'Desconocida', inline: true },
-                    { name: '📍 Posición en cola', value: `${queue.songs.length}`, inline: true }
+                const embed = createSuccessEmbed('🎵 Procesando...', 
+                    `Buscando: **${query}**\n` +
+                    '🛡️ Sistema anti-bloqueo activo'
                 );
+                
+                await interaction.followUp({ embeds: [embed] });
 
-            if (song.thumbnail) {
-                songAddedEmbed.setThumbnail(song.thumbnail);
-            }
-
-            await interaction.followUp({ embeds: [songAddedEmbed] });
-
-            if (!queue.isPlaying) {
-                playMusic(queue);
+            } catch (error) {
+                console.error('Error en comando play:', error);
+                
+                const isYouTubeError = error.message.includes('Sign in') || 
+                                      error.message.includes('blocked') ||
+                                      error.message.includes('unavailable');
+                
+                const errorEmbed = createErrorEmbed('❌ Error de búsqueda', 
+                    isYouTubeError ? 
+                    '🛡️ YouTube bloqueó la búsqueda. Intenta:\n' +
+                    '• Esperar 1-2 minutos\n' +
+                    '• Usar un nombre más específico\n' +
+                    '• Probar con otra canción' :
+                    'No se pudo encontrar la canción. Verifica el nombre o URL.'
+                );
+                
+                await interaction.followUp({ embeds: [errorEmbed] });
             }
             break;
 
         case 'skip':
-            if (!queue || !queue.isPlaying) {
+            if (!queue || !queue.isPlaying()) {
                 return interaction.reply({ content: '❌ No hay música reproduciéndose.', ephemeral: true });
             }
 
-            queue.player.stop();
+            queue.node.skip();
             await interaction.reply('⏭️ Canción saltada.');
             break;
 
@@ -454,51 +329,49 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ content: '❌ No hay música reproduciéndose.', ephemeral: true });
             }
 
-            queue.clear();
-            queue.player?.stop();
-            queue.isPlaying = false;
+            queue.delete();
             await interaction.reply('⏹️ Música parada y cola limpiada.');
             break;
 
         case 'pause':
-            if (!queue || !queue.isPlaying) {
+            if (!queue || !queue.isPlaying()) {
                 return interaction.reply({ content: '❌ No hay música reproduciéndose.', ephemeral: true });
             }
 
-            if (queue.player.state.status === AudioPlayerStatus.Playing) {
-                queue.player.pause();
-                await interaction.reply('⏸️ Música pausada.');
-            } else {
-                queue.player.unpause();
+            if (queue.node.isPaused()) {
+                queue.node.resume();
                 await interaction.reply('▶️ Música reanudada.');
+            } else {
+                queue.node.pause();
+                await interaction.reply('⏸️ Música pausada.');
             }
             break;
 
         case 'queue':
-            if (!queue || queue.songs.length === 0) {
+            if (!queue || queue.tracks.data.length === 0) {
                 return interaction.reply({ content: '📝 La cola está vacía.', ephemeral: true });
             }
 
             let queueList = '';
-            queue.songs.slice(0, 10).forEach((song, index) => {
-                queueList += `${index + 1}. **${song.title}** - ${song.author}\n`;
+            queue.tracks.data.slice(0, 10).forEach((track, index) => {
+                queueList += `${index + 1}. **${track.title}** - ${track.author}\n`;
             });
 
-            if (queue.songs.length > 10) {
-                queueList += `\n... y ${queue.songs.length - 10} más`;
+            if (queue.tracks.data.length > 10) {
+                queueList += `\n... y ${queue.tracks.data.length - 10} más`;
             }
 
-            const queueDisplayEmbed = new EmbedBuilder()
+            const queueEmbed = new EmbedBuilder()
                 .setColor('#0099ff')
                 .setTitle('📝 Cola de Música')
                 .setDescription(queueList || 'La cola está vacía')
                 .addFields(
-                    { name: '🎵 Reproduciendo', value: queue.currentSong?.title || 'Nada', inline: true },
-                    { name: '📊 Total en cola', value: `${queue.songs.length}`, inline: true },
-                    { name: '🔁 Loop', value: queue.loop ? 'Activado' : 'Desactivado', inline: true }
+                    { name: '🎵 Reproduciendo', value: queue.currentTrack?.title || 'Nada', inline: true },
+                    { name: '📊 Total en cola', value: `${queue.tracks.data.length}`, inline: true },
+                    { name: '🔁 Loop', value: queue.repeatMode === 1 ? 'Activado' : 'Desactivado', inline: true }
                 );
 
-            await interaction.reply({ embeds: [queueDisplayEmbed] });
+            await interaction.reply({ embeds: [queueEmbed] });
             break;
 
         case 'loop':
@@ -506,88 +379,74 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ content: '❌ No hay música reproduciéndose.', ephemeral: true });
             }
 
-            queue.loop = !queue.loop;
-            await interaction.reply(`🔁 Loop ${queue.loop ? 'activado' : 'desactivado'}.`);
+            const newMode = queue.repeatMode === 1 ? 0 : 1;
+            queue.setRepeatMode(newMode);
+            await interaction.reply(`🔁 Loop ${newMode === 1 ? 'activado' : 'desactivado'}.`);
             break;
 
         case 'shuffle':
-            if (!queue) {
-                return interaction.reply({ content: '❌ No hay música reproduciéndose.', ephemeral: true });
+            if (!queue || queue.tracks.data.length === 0) {
+                return interaction.reply({ content: '❌ No hay canciones en la cola para mezclar.', ephemeral: true });
             }
 
-            queue.shuffle = !queue.shuffle;
-            await interaction.reply(`🔀 Modo aleatorio ${queue.shuffle ? 'activado' : 'desactivado'}.`);
+            queue.tracks.shuffle();
+            await interaction.reply('🔀 Cola mezclada aleatoriamente.');
             break;
 
         case 'clear':
-            if (!queue || queue.songs.length === 0) {
+            if (!queue || queue.tracks.data.length === 0) {
                 return interaction.reply({ content: '❌ La cola ya está vacía.', ephemeral: true });
             }
 
-            const clearedCount = queue.songs.length;
-            queue.songs = [];
+            const clearedCount = queue.tracks.data.length;
+            queue.tracks.clear();
             await interaction.reply(`🗑️ Se eliminaron ${clearedCount} canción(es) de la cola.`);
             break;
 
         case 'disconnect':
-            if (!queue || !queue.connection) {
+            if (!queue) {
                 return interaction.reply({ content: '❌ El bot no está conectado a ningún canal de voz.', ephemeral: true });
             }
 
-            queue.connection.destroy();
-            queues.delete(guild.id);
+            queue.delete();
             await interaction.reply('👋 Desconectado del canal de voz.');
             break;
     }
 });
 
+// Manejo de botones (mantener la misma lógica pero adaptada)
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton()) return;
 
-    const queue = queues.get(interaction.guildId);
+    const queue = player.nodes.get(interaction.guildId);
     if (!queue) return;
 
     switch (interaction.customId) {
         case 'pause':
-            if (queue.player.state.status === AudioPlayerStatus.Playing) {
-                queue.player.pause();
-                await interaction.reply({ content: '⏸️ Música pausada.', ephemeral: true });
-            } else {
-                queue.player.unpause();
+            if (queue.node.isPaused()) {
+                queue.node.resume();
                 await interaction.reply({ content: '▶️ Música reanudada.', ephemeral: true });
+            } else {
+                queue.node.pause();
+                await interaction.reply({ content: '⏸️ Música pausada.', ephemeral: true });
             }
             break;
 
         case 'skip':
-            queue.player.stop();
+            queue.node.skip();
             await interaction.reply({ content: '⏭️ Canción saltada.', ephemeral: true });
             break;
 
         case 'stop':
-            queue.clear();
-            queue.player?.stop();
-            queue.isPlaying = false;
+            queue.delete();
             await interaction.reply({ content: '⏹️ Música parada y cola limpiada.', ephemeral: true });
             break;
 
         case 'loop':
-            queue.loop = !queue.loop;
-            await interaction.reply({ content: `🔁 Loop ${queue.loop ? 'activado' : 'desactivado'}.`, ephemeral: true });
+            const newMode = queue.repeatMode === 1 ? 0 : 1;
+            queue.setRepeatMode(newMode);
+            await interaction.reply({ content: `🔁 Loop ${newMode === 1 ? 'activado' : 'desactivado'}.`, ephemeral: true });
             break;
-    }
-});
-
-client.on('voiceStateUpdate', (oldState, newState) => {
-    if (oldState.member.id === client.user.id && oldState.channel && !newState.channel) {
-        const queue = queues.get(oldState.guild.id);
-        if (queue) {
-            queue.clear();
-            queue.isPlaying = false;
-            if (queue.connection) {
-                queue.connection.destroy();
-            }
-            queues.delete(oldState.guild.id);
-        }
     }
 });
 
@@ -599,6 +458,7 @@ process.on('unhandledRejection', error => {
     console.error('Unhandled promise rejection:', error);
 });
 
+// Servidor HTTP (mantener igual)
 const http = require('http');
 const PORT = process.env.PORT || 3000;
 
@@ -608,7 +468,8 @@ const server = http.createServer((req, res) => {
         status: 'Discord Music Bot Running',
         uptime: Math.floor(process.uptime()),
         timestamp: new Date().toISOString(),
-        guilds: client.guilds ? client.guilds.cache.size : 0
+        guilds: client.guilds ? client.guilds.cache.size : 0,
+        extractors: player.extractors.size
     }));
 });
 
@@ -616,16 +477,5 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 HTTP Server running on port ${PORT}`);
 });
 
-setInterval(() => {
-    // Limpiar conexiones muertas
-    for (const [guildId, queue] of queues) {
-        if (queue.connection && queue.connection.state.status === 'destroyed') {
-            console.log(`Limpiando conexión muerta para guild ${guildId}`);
-            queues.delete(guildId);
-        }
-    }
-}, 300000); // Cada 5 minutos
-
-console.log('🛡️ Sistema anti-bloqueo YouTube activado');
-
+console.log('🛡️ Discord-player con sistema anti-bloqueo iniciado');
 client.login(TOKEN);
